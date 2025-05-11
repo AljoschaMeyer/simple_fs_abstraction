@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "Deno",
+
+  "name": "@aljoscha-meyer/simple-fs-abstraction",
+  "version": "1.0.0",
+  "exports": "./mod.tsx",
+
+  "imports": {
+    "@std/assert": "jsr:@std/assert@^0.221.0"
+  },
+
+  "compilerOptions": {
+    "lib": ["deno.ns", "dom"],
+    "strict": true
+  },
+
+  "tasks": {
+    "test": "deno test test/tests.ts"
+  }
+}
