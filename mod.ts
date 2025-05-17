@@ -48,7 +48,25 @@ export class Path {
   }
 
   /**
-   * Return whether a given string would be a valid path component (suitable for use with the `relative` or `absolute` functions for Path creation).
+   * Constructs a new path by removing the first component of this path. Returns undefined if the path had no components to start with.
+   */
+  public popFront(): Path | undefined {
+    if (this.components.length > 0) {
+      const componentCopy = [...this.components];
+      componentCopy.shift();
+
+      if (this.isAbsolute()) {
+        return Path.absolute(componentCopy);
+      } else {
+        return Path.relative(componentCopy, this.relativity);
+      }
+    } else {
+      return undefined;
+    }
+  }
+
+  /**
+   * Returns whether a given string would be a valid path component (suitable for use with the `relative` or `absolute` functions for Path creation).
    *
    * A valid componenent must not contain any `/`, and must not be equal to any of `".."`, `"."`, or `""`.
    */
@@ -72,6 +90,24 @@ export class Path {
    */
   public getComponents(): string[] {
     return [...this.components];
+  }
+
+  /**
+   * Returns a component by index.
+   */
+  public getIthComponent(i: number): string | undefined {
+    if (this.components.length > i) {
+      return this.components[i];
+    } else {
+      return undefined;
+    }
+  }
+
+  /**
+   * Returns the number of components (not counting leading `..` steps) of this path.
+   */
+  public getComponentCount(): number {
+    return this.components.length;
   }
 
   public isAbsolute(): boolean {
@@ -129,7 +165,11 @@ export class Path {
     const other_ = Path.fromPathish(other);
 
     if (other_.isAbsolute()) {
-      throw "Cannot concatenate an absolute path to another path";
+      throw new ConcatPathError(
+        "You cannot append an absolute path to another path.",
+        this,
+        other_,
+      );
     }
 
     let relativity = this.relativity;
@@ -144,7 +184,11 @@ export class Path {
     }
 
     if (this.isAbsolute() && relativity > -1) {
-      throw "The `..` components of an absolute path must not step above the root, but they would after this concatenation";
+      throw new ConcatPathError(
+        "The `..` components of an absolute path must not step above the root, but they would after this concatenation.",
+        this,
+        other_,
+      );
     }
 
     for (const component of other_.components) {
@@ -201,12 +245,33 @@ export class Path {
 }
 
 /**
+ * The type of errors thrown by `Path.concat`. The `name` property is always `ConcatPathError`.
+ */
+export class ConcatPathError extends Error {
+  base: Path;
+  appending: Path;
+
+  constructor(message: string, base: Path, appending: Path) {
+    super(message);
+    Object.setPrototypeOf(this, MemoryFsError.prototype);
+    this.name = "ConcatPathError";
+    this.base = base;
+    this.appending = appending;
+  }
+}
+
+/**
  * Parses a string into a `Path`. Uses `/` as a path separator.
- * Absolute paths start with `/`, relative paths start with zero or more `..` components, or with a single `.` component. Inernal `..` components are resolved as expected (they effectively annihilate the preceding "real" component; going "above" the root in an absolute path yields an error), and internal `.` components are ignored (as expected). Path components may not contain `/`, and may not be the empty string.
+ * Absolute paths start with `/`, relative paths start with zero or more `..` components, or with a single `.` component. Internal `..` components are resolved as expected (they effectively annihilate the preceding "real" component; going "above" the root in an absolute path yields an error), and internal `.` components are ignored (as expected). Path components may not contain `/`, and may not be the empty string.
+ *
+ * Throws `ParseSimpleFsPathError`s when receiving an argument that cannot be parsed.
  */
 export function parsePath(str: string): Path {
   if (str.length === 0) {
-    throw "The empty string is not a valid rendered path";
+    throw new ParseSimpleFsPathError(
+      "The empty string cannot be parsed into a Path. Perhaps you need `.` or `/`?",
+      str,
+    );
   }
 
   if (str === "/") {
@@ -225,14 +290,20 @@ export function parsePath(str: string): Path {
       if (isFirstEmptyComponent && isAbsolute) {
         isFirstEmptyComponent = false;
       } else {
-        throw "The empty string is not a valid path component";
+        throw new ParseSimpleFsPathError(
+          "The empty string cannot be used as a path component, but you tried to parse a string into a Path that contained successive slashes.",
+          str,
+        );
       }
     } else if (part === ".") {
       // do nothing
     } else if (part === "..") {
       if (components.length === 0) {
         if (isAbsolute) {
-          throw "The `..` components of an absolute path must not step above the root";
+          throw new ParseSimpleFsPathError(
+            "When parsing a string into a Path, the `..` components of an absolute path must not step above the root.",
+            str,
+          );
         } else {
           parentSteps += 1;
         }
@@ -248,6 +319,20 @@ export function parsePath(str: string): Path {
     return Path.absolute(components);
   } else {
     return Path.relative(components, parentSteps);
+  }
+}
+
+/**
+ * The type of errors thrown by `parsePath`. The `name` property is always `ParseSimpleFsPathError`.
+ */
+export class ParseSimpleFsPathError extends Error {
+  stringToParse: string;
+
+  constructor(message: string, stringToParse: string) {
+    super(message);
+    Object.setPrototypeOf(this, MemoryFsError.prototype);
+    this.name = "ParseSimpleFsPathError";
+    this.stringToParse = stringToParse;
   }
 }
 
@@ -300,11 +385,11 @@ export interface SimpleFilesystem {
   /**
    * Reads the complete contents of a data file into a byte buffer. Rejects if the path addresses a directory (or nothing).
    */
-  read(path: Pathish): Promise<Uint8Array<ArrayBuffer>>;
+  read(path: Pathish): Promise<Uint8Array>;
   /**
    * Synchronously reads the complete contents of a data file into a byte buffer. Throws if the path addresses a directory (or nothing).
    */
-  readSync(path: Pathish): Uint8Array<ArrayBuffer>;
+  readSync(path: Pathish): Uint8Array;
 
   /**
    * Creates a file with the given contents at the given path.
@@ -401,11 +486,83 @@ export interface SimpleFilesystemExt {
  * Turns a `SimpleFilesystem` into a `SimpleFilesystemExt` with some default implementations.
  */
 export class FilesystemExt<Fs extends SimpleFilesystem>
-  implements SimpleFilesystemExt {
+  implements SimpleFilesystem, SimpleFilesystemExt {
   fs: Fs;
 
   constructor(fs: Fs) {
     this.fs = fs;
+  }
+
+  pwd(): Path {
+    return this.fs.pwd();
+  }
+
+  cd(path: Pathish): void {
+    return this.fs.cd(path);
+  }
+
+  ls(path: Pathish): Promise<Set<string>> {
+    return this.fs.ls(path);
+  }
+
+  lsSync(path: Pathish): Set<string> {
+    return this.fs.lsSync(path);
+  }
+
+  stat(path: Pathish): Promise<"directory" | "data" | "nothing"> {
+    return this.fs.stat(path);
+  }
+
+  statSync(path: Pathish): "directory" | "data" | "nothing" {
+    return this.fs.statSync(path);
+  }
+
+  read(path: Pathish): Promise<Uint8Array> {
+    return this.fs.read(path);
+  }
+
+  readSync(path: Pathish): Uint8Array {
+    return this.fs.readSync(path);
+  }
+
+  write(path: Pathish, data: Uint8Array, mode?: Mode): Promise<void> {
+    return this.fs.write(path, data, mode);
+  }
+
+  writeSync(path: Pathish, data: Uint8Array, mode?: Mode): void {
+    return this.fs.writeSync(path, data, mode);
+  }
+
+  mkdir(path: Pathish, mode?: Mode): Promise<void> {
+    return this.fs.mkdir(path, mode);
+  }
+
+  mkdirSync(path: Pathish, mode?: Mode): void {
+    return this.fs.mkdirSync(path, mode);
+  }
+
+  remove(path: Pathish): Promise<void> {
+    return this.fs.remove(path);
+  }
+
+  removeSync(path: Pathish): void {
+    return this.fs.removeSync(path);
+  }
+
+  copy(src: Pathish, dst: Pathish, mode?: Mode): Promise<void> {
+    return this.fs.copy(src, dst, mode);
+  }
+
+  copySync(src: Pathish, dst: Pathish, mode?: Mode): void {
+    return this.fs.copySync(src, dst, mode);
+  }
+
+  move(src: Pathish, dst: Pathish, mode?: Mode): Promise<void> {
+    return this.fs.move(src, dst, mode);
+  }
+
+  moveSync(src: Pathish, dst: Pathish, mode?: Mode): void {
+    return this.fs.moveSync(src, dst, mode);
   }
 
   async readString(path: Pathish): Promise<string> {
@@ -528,5 +685,225 @@ function fileEq(
         );
       });
     }
+  }
+}
+
+const NO_SUCH_FILE = "Addressed a file but there is no file of that name.";
+const EXPECTED_DIRECTORY_GOT_DATA =
+  "Addressed a directory but there was a data file instead.";
+
+/**
+ * An implementation of `SimpleFilesystem` that stores data purely in memory.
+ */
+export class MemoryFs implements SimpleFilesystem {
+  private root: MemoryDirectory;
+  private workingDirectory: Path;
+
+  constructor() {
+    this.root = new MemoryDirectory(new Map());
+    this.workingDirectory = Path.absolute([]);
+  }
+
+  private resolveAbsolutePath(
+    path: Pathish,
+    createParentDirs = false,
+  ): MemoryDirectory | Uint8Array | "nothing" {
+    return this.root.resolveAbsolutePath(path, createParentDirs);
+  }
+
+  pwd(): Path {
+    return this.workingDirectory;
+  }
+
+  cd(path: Pathish): void {
+    const path_ = Path.fromPathish(path);
+
+    const target = path_.isAbsolute()
+      ? path_
+      : this.workingDirectory.concat(path_);
+
+    const resolved = this.resolveAbsolutePath(target, false);
+
+    if (resolved === "nothing") {
+      throw new MemoryFsError(NO_SUCH_FILE);
+    } else if (resolved instanceof MemoryDirectory) {
+      this.workingDirectory = target;
+      return;
+    } else {
+      throw new MemoryFsError(EXPECTED_DIRECTORY_GOT_DATA);
+    }
+  }
+
+  ls(path: Pathish): Promise<Set<string>> {
+    return Promise.resolve(this.lsSync(path));
+  }
+
+  lsSync(path: Pathish): Set<string> {
+    throw new Error("Method not implemented.");
+  }
+
+  stat(path: Pathish): Promise<"directory" | "data" | "nothing"> {
+    return Promise.resolve(this.statSync(path));
+  }
+
+  statSync(path: Pathish): "directory" | "data" | "nothing" {
+    throw new Error("Method not implemented.");
+  }
+
+  read(path: Pathish): Promise<Uint8Array<ArrayBuffer>> {
+    return Promise.resolve(this.readSync(path));
+  }
+
+  readSync(path: Pathish): Uint8Array<ArrayBuffer> {
+    throw new Error("Method not implemented.");
+  }
+
+  write(path: Pathish, data: Uint8Array, mode?: Mode): Promise<void> {
+    return Promise.resolve(this.writeSync(path, data, mode));
+  }
+
+  writeSync(path: Pathish, data: Uint8Array, mode?: Mode): void {
+    throw new Error("Method not implemented.");
+  }
+
+  mkdir(path: Pathish, mode?: Mode): Promise<void> {
+    return Promise.resolve(this.mkdirSync(path, mode));
+  }
+
+  mkdirSync(path: Pathish, mode?: Mode): void {
+    throw new Error("Method not implemented.");
+  }
+
+  remove(path: Pathish): Promise<void> {
+    return Promise.resolve(this.removeSync(path));
+  }
+
+  removeSync(path: Pathish): void {
+    throw new Error("Method not implemented.");
+  }
+
+  copy(src: Pathish, dst: Pathish, mode?: Mode): Promise<void> {
+    return Promise.resolve(this.copySync(src, dst, mode));
+  }
+
+  copySync(src: Pathish, dst: Pathish, mode?: Mode): void {
+    throw new Error("Method not implemented.");
+  }
+
+  move(src: Pathish, dst: Pathish, mode?: Mode): Promise<void> {
+    return Promise.resolve(this.moveSync(src, dst, mode));
+  }
+
+  moveSync(src: Pathish, dst: Pathish, mode?: Mode): void {
+    throw new Error("Method not implemented.");
+  }
+
+  /**
+   * Create a populated `MemoryFs` (with a current working directory of `/`).
+   *
+   * Throws if any of the strings is not a valid component.
+   */
+  static fromLiteral(literal: MemoryFsLiteral): MemoryFs {
+    const fs = new MemoryFs();
+    fs.root = MemoryDirectory.fromLiteral(literal);
+    return fs;
+  }
+}
+
+/**
+ * The argument for `MemoryFs.fromLiteral`, use this to create an immediately populated `MemoryFs`, usually for testing.
+ */
+export type MemoryFsLiteral = { [key: string]: string | MemoryFsLiteral };
+
+class MemoryDirectory {
+  contents: Map<string, MemoryDirectory | Uint8Array>;
+
+  constructor(contents?: Map<string, MemoryDirectory | Uint8Array>) {
+    if (contents === undefined) {
+      this.contents = new Map();
+    } else {
+      this.contents = contents;
+    }
+  }
+
+  resolveAbsolutePath(
+    path: Pathish,
+    createParentDirs = false,
+  ): MemoryDirectory | Uint8Array | "nothing" {
+    const path_ = Path.fromPathish(path);
+
+    const firstComponent = path_.getIthComponent(0);
+    const popped = path_.popFront()!;
+    const componentCount = path_.getComponentCount();
+
+    if (firstComponent === undefined) {
+      return this;
+    } else {
+      const file = this.contents.get(firstComponent);
+
+      if (file === undefined) {
+        if (createParentDirs) {
+          if (componentCount === 1) {
+            return "nothing";
+          } else {
+            const newDir = new MemoryDirectory();
+            this.contents.set(firstComponent, newDir);
+            return newDir.resolveAbsolutePath(popped, createParentDirs);
+          }
+        } else {
+          if (componentCount === 1) {
+            return "nothing";
+          } else {
+            throw new MemoryFsError(NO_SUCH_FILE);
+          }
+        }
+      } else if (file instanceof MemoryDirectory) {
+        if (componentCount === 1) {
+          return file;
+        } else {
+          return file.resolveAbsolutePath(popped, createParentDirs);
+        }
+      } else {
+        if (componentCount === 1) {
+          return file;
+        } else {
+          throw new MemoryFsError(EXPECTED_DIRECTORY_GOT_DATA);
+        }
+      }
+    }
+  }
+
+  static fromLiteral(literal: MemoryFsLiteral): MemoryDirectory {
+    const dir = new MemoryDirectory();
+
+    for (const comp in literal) {
+      if (Path.isComponent(comp)) {
+        const val = literal[comp];
+
+        if (typeof val === "string") {
+          const encoder = new TextEncoder();
+          const bytes = encoder.encode(val);
+          dir.contents.set(comp, bytes);
+        } else {
+          const nestedDir = MemoryDirectory.fromLiteral(val);
+          dir.contents.set(comp, nestedDir);
+        }
+      } else {
+        throw `Invalid MemoryFsLiteral: ${comp} is not a valid Path component.`;
+      }
+    }
+
+    return dir;
+  }
+}
+
+/**
+ * The type of errors thrown by all `MemoryFs` operations (in addition to `ConcatPathError`s and `ParseSimpleFsPathError`s). The `name` property is always `MemoryFsError`.
+ */
+export class MemoryFsError extends Error {
+  constructor(message: string) {
+    super(message);
+    Object.setPrototypeOf(this, MemoryFsError.prototype);
+    this.name = "MemoryFsError";
   }
 }

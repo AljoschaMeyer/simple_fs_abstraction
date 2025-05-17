@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
-import { parsePath, Path } from "../mod.ts";
+import { FilesystemExt, MemoryFs, MemoryFsLiteral, parsePath, Path } from "../mod.ts";
 
 Deno.test("Path.isComponent", async (t) => {
   await t.step("rejects empty string", () => {
@@ -135,4 +135,52 @@ Deno.test("Path.concat", () => {
   );
   assertEquals(Path.relative([]).concat(".."), Path.relative([], 1));
   assertEquals(Path.relative(["foo"]).concat("../.."), Path.relative([], 1));
+});
+
+const testFsLiteral: MemoryFsLiteral = {
+  blog: {
+    posts: {
+      intro: "Hiiii!!!!",
+      "deepThoughts.md":
+        "I'd like to be under the sea in an octopus's garden in the shade.",
+    },
+    recipes: {
+      curry: "Mix ingredients, then eat.",
+    },
+  },
+  chess: {
+    game1: {
+      move1: "e4",
+    },
+  },
+};
+
+Deno.test("MemoryFs.cd", () => {
+  const fs = new FilesystemExt(MemoryFs.fromLiteral(testFsLiteral));
+
+  assertEquals(fs.pwd().toString(), "/");
+
+  fs.cd("blog/recipes");
+  assertEquals(fs.pwd().toString(), "/blog/recipes");
+
+  fs.cd("..");
+  assertEquals(fs.pwd().toString(), "/blog");
+
+  fs.cd("/chess");
+  assertEquals(fs.pwd().toString(), "/chess");
+
+  assertThrows(() => {
+    fs.cd("../../../..");
+  });
+
+  // Assert that the throwing cd didn't change the pwd.
+  assertEquals(fs.pwd().toString(), "/chess");
+
+  assertThrows(() => {
+    fs.cd("doesntexist");
+  });
+
+  assertThrows(() => {
+    fs.cd("game1/move1");
+  });
 });
