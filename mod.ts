@@ -486,7 +486,7 @@ export interface SimpleFilesystemExt {
   ensureNotSync(path: Pathish, mode?: Mode): void;
 
   /**
-   * Returns `true` iff the `other` file system is equal to this file system. Ignores current working directories, compares both from their roots.
+   * Returns `true` iff the contents of the current working directory of the `other` file system are equal to the contents of the current working directory of this file system.
    */
   eq(other: SimpleFilesystem): boolean;
 }
@@ -643,7 +643,7 @@ export class FilesystemExt<Fs extends SimpleFilesystem>
   }
 
   eq(other: SimpleFilesystem): boolean {
-    return fileEq(this.fs, Path.absolute([]), other, Path.absolute([]));
+    return fileEq(this.fs, this.pwd(), other, other.pwd());
   }
 }
 
