@@ -104,6 +104,15 @@ export class Path {
   }
 
   /**
+   * Returns the final component, or undefined if the path has zero components.
+   */
+  public getFinalComponent(): string | undefined {
+    return this.components.length === 0
+      ? undefined
+      : this.components[this.components.length - 1];
+  }
+
+  /**
    * Returns the number of components (not counting leading `..` steps) of this path.
    */
   public getComponentCount(): number {
@@ -365,13 +374,13 @@ export interface SimpleFilesystem {
   cd(path: Pathish): void;
 
   /**
-   * Returns the names of all files in the directory at the given path. Rejects if the path addresses a data file instead of a directory.
+   * Returns the names of all files in the directory at the given path (defaulting to the current working directory). Rejects if the path addresses a data file instead of a directory.
    */
-  ls(path: Pathish): Promise<Set<string>>;
+  ls(path?: Pathish): Promise<Set<string>>;
   /**
-   * Synchronously returns the names of all files in the directory at the given path. Throws if the path addresses a data file instead of a directory.
+   * Synchronously returns the names of all files in the directory at the given path (defaulting to the current working directory). Throws if the path addresses a data file instead of a directory.
    */
-  lsSync(path: Pathish): Set<string>;
+  lsSync(path?: Pathish): Set<string>;
 
   /**
    * Returns what kind of file (if any) is at the given path. Rejects if the parent of the targeted file does not exist.
@@ -501,11 +510,11 @@ export class FilesystemExt<Fs extends SimpleFilesystem>
     return this.fs.cd(path);
   }
 
-  ls(path: Pathish): Promise<Set<string>> {
+  ls(path?: Pathish): Promise<Set<string>> {
     return this.fs.ls(path);
   }
 
-  lsSync(path: Pathish): Set<string> {
+  lsSync(path?: Pathish): Set<string> {
     return this.fs.lsSync(path);
   }
 
@@ -690,7 +699,17 @@ function fileEq(
 
 const NO_SUCH_FILE = "Addressed a file but there is no file of that name.";
 const EXPECTED_DIRECTORY_GOT_DATA =
-  "Addressed a directory but there was a data file instead.";
+  "Wanted to address a directory but there was a data file instead.";
+const EXPECTED_DATA_GOT_DIRECTORY =
+  "Wanted to address a data file but there was a directory instead.";
+const CANNOT_TURN_ROOT_INTO_DATA_FILE =
+  "Tried to turn the root of a filesystem into a data file, but that is not allowed";
+const CANNOT_COPY_OR_MOVE_INTO_ROOT =
+  "Tried to copy or move a file to the root of a filesystem, but that is not allowed";
+const CANNOT_DELETE_ROOT =
+  "Tried to delete the root of a filesystem, but that is not allowed";
+const TIMID =
+  "A filesystem oepration of mode `timid` (the default mode) would have overwritten data, so it threw this error instead.";
 
 /**
  * An implementation of `SimpleFilesystem` that stores data purely in memory.
@@ -707,8 +726,17 @@ export class MemoryFs implements SimpleFilesystem {
   private resolveAbsolutePath(
     path: Pathish,
     createParentDirs = false,
-  ): MemoryDirectory | Uint8Array | "nothing" {
+  ): [
+    MemoryDirectory | Uint8Array | "nothing",
+    MemoryDirectory | undefined, /* parent dir */
+  ] {
     return this.root.resolveAbsolutePath(path, createParentDirs);
+  }
+
+  private computeAbsolutePath(path: Pathish): Path {
+    const path_ = Path.fromPathish(path);
+
+    return path_.isAbsolute() ? path_ : this.workingDirectory.concat(path_);
   }
 
   pwd(): Path {
@@ -716,17 +744,13 @@ export class MemoryFs implements SimpleFilesystem {
   }
 
   cd(path: Pathish): void {
-    const path_ = Path.fromPathish(path);
-
-    const target = path_.isAbsolute()
-      ? path_
-      : this.workingDirectory.concat(path_);
+    const target = this.computeAbsolutePath(path);
 
     const resolved = this.resolveAbsolutePath(target, false);
 
-    if (resolved === "nothing") {
+    if (resolved[0] === "nothing") {
       throw new MemoryFsError(NO_SUCH_FILE);
-    } else if (resolved instanceof MemoryDirectory) {
+    } else if (resolved[0] instanceof MemoryDirectory) {
       this.workingDirectory = target;
       return;
     } else {
@@ -734,12 +758,30 @@ export class MemoryFs implements SimpleFilesystem {
     }
   }
 
-  ls(path: Pathish): Promise<Set<string>> {
+  ls(path?: Pathish): Promise<Set<string>> {
     return Promise.resolve(this.lsSync(path));
   }
 
-  lsSync(path: Pathish): Set<string> {
-    throw new Error("Method not implemented.");
+  lsSync(path?: Pathish): Set<string> {
+    const target = this.computeAbsolutePath(
+      path === undefined ? Path.relative([]) : path,
+    );
+
+    const resolved = this.resolveAbsolutePath(target, false);
+
+    if (resolved[0] === "nothing") {
+      throw new MemoryFsError(NO_SUCH_FILE);
+    } else if (resolved[0] instanceof MemoryDirectory) {
+      const ret = new Set<string>();
+
+      for (const component of resolved[0].contents.keys()) {
+        ret.add(component);
+      }
+
+      return ret;
+    } else {
+      throw new MemoryFsError(EXPECTED_DIRECTORY_GOT_DATA);
+    }
   }
 
   stat(path: Pathish): Promise<"directory" | "data" | "nothing"> {
@@ -747,31 +789,101 @@ export class MemoryFs implements SimpleFilesystem {
   }
 
   statSync(path: Pathish): "directory" | "data" | "nothing" {
-    throw new Error("Method not implemented.");
+    const target = this.computeAbsolutePath(path);
+
+    const resolved = this.resolveAbsolutePath(target, false);
+
+    if (resolved[0] === "nothing") {
+      return "nothing";
+    } else if (resolved[0] instanceof MemoryDirectory) {
+      return "directory";
+    } else {
+      return "data";
+    }
   }
 
-  read(path: Pathish): Promise<Uint8Array<ArrayBuffer>> {
+  read(path: Pathish): Promise<Uint8Array> {
     return Promise.resolve(this.readSync(path));
   }
 
-  readSync(path: Pathish): Uint8Array<ArrayBuffer> {
-    throw new Error("Method not implemented.");
+  readSync(path: Pathish): Uint8Array {
+    const target = this.computeAbsolutePath(path);
+
+    const resolved = this.resolveAbsolutePath(target, false);
+
+    if (resolved[0] === "nothing") {
+      throw new MemoryFsError(NO_SUCH_FILE);
+    } else if (resolved[0] instanceof MemoryDirectory) {
+      throw new MemoryFsError(EXPECTED_DATA_GOT_DIRECTORY);
+    } else {
+      return resolved[0];
+    }
   }
 
-  write(path: Pathish, data: Uint8Array, mode?: Mode): Promise<void> {
+  write(path: Pathish, data: Uint8Array, mode: Mode = "timid"): Promise<void> {
     return Promise.resolve(this.writeSync(path, data, mode));
   }
 
-  writeSync(path: Pathish, data: Uint8Array, mode?: Mode): void {
-    throw new Error("Method not implemented.");
+  writeSync(path: Pathish, data: Uint8Array, mode: Mode = "timid"): void {
+    const target = this.computeAbsolutePath(path);
+
+    const resolved = this.resolveAbsolutePath(target, true);
+
+    if (resolved[0] === "nothing") {
+      if (resolved[1] === undefined) {
+        throw new MemoryFsError(CANNOT_TURN_ROOT_INTO_DATA_FILE);
+      } else {
+        resolved[1].contents.set(target.getFinalComponent()!, data);
+      }
+    } else {
+      if (mode === "timid") {
+        throw new MemoryFsError(TIMID);
+      } else if (mode === "placid") {
+        // Do nothing.
+      } else {
+        if (resolved[1] === undefined) {
+          throw new MemoryFsError(CANNOT_TURN_ROOT_INTO_DATA_FILE);
+        } else {
+          resolved[1].contents.set(target.getFinalComponent()!, data);
+        }
+      }
+    }
   }
 
-  mkdir(path: Pathish, mode?: Mode): Promise<void> {
+  mkdir(path: Pathish, mode: Mode = "timid"): Promise<void> {
     return Promise.resolve(this.mkdirSync(path, mode));
   }
 
-  mkdirSync(path: Pathish, mode?: Mode): void {
-    throw new Error("Method not implemented.");
+  mkdirSync(path: Pathish, mode: Mode = "timid"): void {
+    const target = this.computeAbsolutePath(path);
+
+    const resolved = this.resolveAbsolutePath(target, true);
+
+    if (resolved[0] === "nothing") {
+      if (resolved[1] === undefined) {
+        throw "unreachable";
+      } else {
+        resolved[1].contents.set(
+          target.getFinalComponent()!,
+          new MemoryDirectory(),
+        );
+      }
+    } else {
+      if (mode === "timid") {
+        throw new MemoryFsError(TIMID);
+      } else if (mode === "placid") {
+        // Do nothing.
+      } else {
+        if (resolved[1] === undefined) {
+          this.root.contents.clear();
+        } else {
+          resolved[1].contents.set(
+            target.getFinalComponent()!,
+            new MemoryDirectory(),
+          );
+        }
+      }
+    }
   }
 
   remove(path: Pathish): Promise<void> {
@@ -779,23 +891,103 @@ export class MemoryFs implements SimpleFilesystem {
   }
 
   removeSync(path: Pathish): void {
-    throw new Error("Method not implemented.");
+    const target = this.computeAbsolutePath(path);
+
+    const resolved = this.resolveAbsolutePath(target, true);
+
+    if (resolved[0] === "nothing") {
+      // Do nothing.
+    } else if (resolved[1] === undefined) {
+      throw new MemoryFsError(CANNOT_DELETE_ROOT);
+    } else {
+      resolved[1].contents.delete(
+        target.getFinalComponent()!,
+      );
+    }
   }
 
-  copy(src: Pathish, dst: Pathish, mode?: Mode): Promise<void> {
+  copy(src: Pathish, dst: Pathish, mode: Mode = "timid"): Promise<void> {
     return Promise.resolve(this.copySync(src, dst, mode));
   }
 
-  copySync(src: Pathish, dst: Pathish, mode?: Mode): void {
-    throw new Error("Method not implemented.");
+  copySync(src: Pathish, dst: Pathish, mode: Mode = "timid"): void {
+    return this.copyOrMoveSync(src, dst, false, mode);
   }
 
-  move(src: Pathish, dst: Pathish, mode?: Mode): Promise<void> {
+  move(src: Pathish, dst: Pathish, mode: Mode = "timid"): Promise<void> {
     return Promise.resolve(this.moveSync(src, dst, mode));
   }
 
-  moveSync(src: Pathish, dst: Pathish, mode?: Mode): void {
-    throw new Error("Method not implemented.");
+  moveSync(src: Pathish, dst: Pathish, mode: Mode = "timid"): void {
+    return this.copyOrMoveSync(src, dst, true, mode);
+  }
+
+  copyOrMoveSync(
+    src: Pathish,
+    dst: Pathish,
+    removeSrc: boolean,
+    mode: Mode,
+  ): void {
+    const src_absolute = this.computeAbsolutePath(src);
+    const src_resolved = this.resolveAbsolutePath(src_absolute, false);
+
+    if (src_resolved[0] === "nothing") {
+      throw new MemoryFsError(NO_SUCH_FILE);
+    } else {
+      const dst_absolute = this.computeAbsolutePath(dst);
+      const dst_resolved = this.resolveAbsolutePath(dst_absolute, true);
+
+      if (dst_resolved[0] === "nothing") {
+        if (dst_resolved[1] === undefined) {
+          throw new MemoryFsError(CANNOT_COPY_OR_MOVE_INTO_ROOT);
+        } else {
+          if (src_resolved[0] instanceof MemoryDirectory) {
+            dst_resolved[1].contents.set(
+              dst_absolute.getFinalComponent()!,
+              src_resolved[0].clone(),
+            );
+          } else {
+            dst_resolved[1].contents.set(
+              dst_absolute.getFinalComponent()!,
+              new Uint8Array(src_resolved[0]),
+            );
+          }
+
+          if (removeSrc) {
+            this.removeSync(src);
+          }
+        }
+      } else {
+        if (dst_resolved[1] === undefined) {
+          throw new MemoryFsError(CANNOT_COPY_OR_MOVE_INTO_ROOT);
+        } else {
+          if (mode === "timid") {
+            throw new MemoryFsError(TIMID);
+          } else if (mode === "placid") {
+            if (removeSrc) {
+              this.removeSync(src);
+            }
+            // Do nothing.
+          } else {
+            if (src_resolved[0] instanceof MemoryDirectory) {
+              dst_resolved[1].contents.set(
+                dst_absolute.getFinalComponent()!,
+                src_resolved[0].clone(),
+              );
+            } else {
+              dst_resolved[1].contents.set(
+                dst_absolute.getFinalComponent()!,
+                new Uint8Array(src_resolved[0]),
+              );
+            }
+
+            if (removeSrc) {
+              this.removeSync(src);
+            }
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -829,7 +1021,10 @@ class MemoryDirectory {
   resolveAbsolutePath(
     path: Pathish,
     createParentDirs = false,
-  ): MemoryDirectory | Uint8Array | "nothing" {
+  ): [
+    MemoryDirectory | Uint8Array | "nothing",
+    MemoryDirectory | undefined, /* parent dir */
+  ] {
     const path_ = Path.fromPathish(path);
 
     const firstComponent = path_.getIthComponent(0);
@@ -837,14 +1032,14 @@ class MemoryDirectory {
     const componentCount = path_.getComponentCount();
 
     if (firstComponent === undefined) {
-      return this;
+      return [this, undefined];
     } else {
       const file = this.contents.get(firstComponent);
 
       if (file === undefined) {
         if (createParentDirs) {
           if (componentCount === 1) {
-            return "nothing";
+            return ["nothing", this];
           } else {
             const newDir = new MemoryDirectory();
             this.contents.set(firstComponent, newDir);
@@ -852,20 +1047,20 @@ class MemoryDirectory {
           }
         } else {
           if (componentCount === 1) {
-            return "nothing";
+            return ["nothing", this];
           } else {
             throw new MemoryFsError(NO_SUCH_FILE);
           }
         }
       } else if (file instanceof MemoryDirectory) {
         if (componentCount === 1) {
-          return file;
+          return [file, this];
         } else {
           return file.resolveAbsolutePath(popped, createParentDirs);
         }
       } else {
         if (componentCount === 1) {
-          return file;
+          return [file, this];
         } else {
           throw new MemoryFsError(EXPECTED_DIRECTORY_GOT_DATA);
         }
@@ -894,6 +1089,20 @@ class MemoryDirectory {
     }
 
     return dir;
+  }
+
+  clone(): MemoryDirectory {
+    const theClone = new MemoryDirectory();
+
+    for (const [component, file] of this.contents.entries()) {
+      if (file instanceof MemoryDirectory) {
+        theClone.contents.set(component, file.clone());
+      } else {
+        theClone.contents.set(component, new Uint8Array(file));
+      }
+    }
+
+    return theClone;
   }
 }
 
