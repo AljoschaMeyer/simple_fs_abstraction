@@ -1,3 +1,5 @@
+Repository moved to https://codeberg.org/worm-blossom/simple-fs-abstraction
+
 # Simple FS Abstraction
 
 This typescript library provides a simple, platform-agnostic abstraction for
