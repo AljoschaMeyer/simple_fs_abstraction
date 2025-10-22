@@ -328,9 +328,18 @@ Deno.test("MemoryFs.cd", () => {
 Deno.test("MemoryFs.ls", () => {
   const fs = new FilesystemExt(MemoryFs.fromLiteral(testFsLiteral));
 
-  assertEquals(fs.lsSync().size, 3);
+  const set1 = fs.lsSync();
+  assertEquals(set1.size, 3);
+  assert(set1.has("blog"));
+  assert(set1.has("chess"));
+  assert(set1.has("emptyDir"));
+
+  const set2 = fs.lsSync("blog/posts");
+  assertEquals(set2.size, 2);
+  assert(set2.has("intro"));
+  assert(set2.has("deepThoughts.md"));
+
   assertEquals(fs.lsSync("emptyDir").size, 0);
-  assertEquals(fs.lsSync("blog/posts").size, 2);
 
   assertThrows(() => {
     fs.lsSync("..");
@@ -353,11 +362,7 @@ Deno.test("MemoryFs.stat", () => {
   assertEquals(fs.statSync("blog/recipes/nope"), "nothing");
 
   assertThrows(() => {
-    fs.lsSync("..");
-  });
-
-  assertThrows(() => {
-    fs.lsSync("blog/recipes/nope");
+    fs.statSync("..");
   });
 });
 

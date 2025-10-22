@@ -3,11 +3,12 @@
   "display": "Deno",
 
   "name": "@aljoscha-meyer/simple-fs-abstraction",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "exports": "./mod.tsx",
 
   "imports": {
-    "@std/assert": "jsr:@std/assert@^0.221.0"
+    "@std/assert": "jsr:@std/assert@^0.221.0",
+    "@std/path": "jsr:@std/path@^1.1.0"
   },
 
   "compilerOptions": {

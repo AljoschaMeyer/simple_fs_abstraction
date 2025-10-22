@@ -1,18 +1,37 @@
 /**
- * Either a proper path, or a string that can be parsed into a proper Path (see `parsePath`).
+ * A simple, platform-agnostic interface for file systems: paths, files and directories, and that is it. No symlinks, no hardlinks, no metadata, no locking. Intended to be backed by implementations for different typescript runtimes and/or platforms (or runtime-agnostic in-memory backends for non-persistent use-cases).
  *
- * When using a string that cannot be parsed into a Path, things may error or misbehave in arbitrary other ways.
+ * The exact functionality of simple file systems is defined in the {@linkcode SimpleFilesystem} interface. We provide only a simple in-memory implementation of that interface — the {@linkcode MemoryFs}. Persistent, platform-specific implementations must be imported from other packages, such as [simple-fs-deno](https://jsr.io/@wormblossom/simple-fs-deno) for Deno.
+ *
+ * The {@linkcode Path} class describes paths in the simple fs. See the {@linkcode Pathish} type for working not only with {@linkcode Path | Paths} but also with strings which can be {@linkcode parsePath | parsed} into paths.
+ *
+ * @module
+ */
+
+import { SEPARATOR } from "@std/path/constants";
+
+/**
+ * Either a proper {@linkcode Path}, or a string which can be parsed into a proper {@linkcode Path} (see `parsePath`).
+ *
+ * When a {@linkcode Pathish} is a string which cannot be parsed into a {@linkcode Path}, all functionality relying on that {@linkcode Pathish} becomes unspecified. Typically, a {@linkcode ParseSimpleFsPathError} would be thrown.
  */
 export type Pathish = Path | string;
 
 /**
  * An immutable, normalised path in a simple filesystem.
+ *
+ * A path consists of any number of *components*. Some silly strings are disallowed as components, the exact criteria for valid components are {@link Path.isComponent | documented here}.
+ *
+ * Every path is either absolute or relative. A relative path conceptually starts with some number of `..` steps, these are called the {@link Path.prototype.getParentSteps | parent steps} of the path.
  */
 export class Path {
-  // - 1 for absolute paths, a natural number for a relative path wihch starts with this many `..` components.
+  // - 1 for absolute paths, a natural number for a relative path which starts with this many `..` components.
+  /** @ignore */
   private readonly relativity: number;
+  /** @ignore */
   private readonly components: string[];
 
+  /** @ignore */
   private constructor(relativity: number, components: string[]) {
     for (const component of components) {
       if (!Path.isComponent(component)) {
@@ -25,7 +44,7 @@ export class Path {
   }
 
   /**
-   * Create a relative path. The `parentSteps` must be a natural number and indicate how many `..`s there are (conceptually) at the start of the path.
+   * Create a relative path consisting of the given {@link Path.isComponent | components}. The `parentSteps` must be a natural number, it indicates how many `..`s there are (conceptually) at the start of the path.
    */
   public static relative(components: string[], parentSteps = 0): Path {
     if (Number.isInteger(parentSteps) && parentSteps >= 0) {
@@ -35,10 +54,16 @@ export class Path {
     }
   }
 
+  /**
+   * Creates an absolute path consisting of the given {@link Path.isComponent | components}.
+   */
   public static absolute(components: string[]): Path {
     return new Path(-1, components);
   }
 
+  /**
+   * Converts a {@linkcode Pathish} into a proper {@linkcode Path}, by {@linkcode parsePath | parsing } if the argument is a string.
+   */
   public static fromPathish(pathish: Pathish): Path {
     if (typeof pathish === "string") {
       return parsePath(pathish);
@@ -48,7 +73,7 @@ export class Path {
   }
 
   /**
-   * Constructs a new path by removing the first component of this path. Returns undefined if the path had no components to start with.
+   * Constructs a new path by removing the first {@link Path.isComponent | component} of this path. Returns `undefined` if the path had zero components to start with.
    */
   public popFront(): Path | undefined {
     if (this.components.length > 0) {
@@ -66,7 +91,21 @@ export class Path {
   }
 
   /**
-   * Returns whether a given string would be a valid path component (suitable for use with the `relative` or `absolute` functions for Path creation).
+   * Constructs a new path by appending a {@link Path.isComponent | components} to the end of this path.
+   */
+  public pushBack(newComponent: string): Path {
+    const componentCopy = [...this.components];
+    componentCopy.push(newComponent);
+
+    if (this.isAbsolute()) {
+      return Path.absolute(componentCopy);
+    } else {
+      return Path.relative(componentCopy, this.relativity);
+    }
+  }
+
+  /**
+   * Returns whether a given string would be a valid path component.
    *
    * A valid componenent must not contain any `/`, and must not be equal to any of `".."`, `"."`, or `""`.
    */
@@ -86,14 +125,14 @@ export class Path {
   }
 
   /**
-   * Returns a copy of the components of this path. Does not include any `..` steps at the start of this path.
+   * Returns a copy of the {@link Path.isComponent | components} of this path. Does not include any `..` steps at the start of this path.
    */
   public getComponents(): string[] {
     return [...this.components];
   }
 
   /**
-   * Returns a component by index.
+   * Returns a {@link Path.isComponent | component} by its index, or `undefined` if the index is out of bounds.
    */
   public getIthComponent(i: number): string | undefined {
     if (this.components.length > i) {
@@ -104,7 +143,7 @@ export class Path {
   }
 
   /**
-   * Returns the final component, or undefined if the path has zero components.
+   * Returns the final {@link Path.isComponent | components}, or `undefined` if the path has zero components.
    */
   public getFinalComponent(): string | undefined {
     return this.components.length === 0
@@ -113,16 +152,29 @@ export class Path {
   }
 
   /**
-   * Returns the number of components (not counting leading `..` steps) of this path.
+   * Returns the number of {@link Path.isComponent | components} (not counting leading `..` steps) of this path.
    */
   public getComponentCount(): number {
     return this.components.length;
   }
 
+  /**
+   * Returns whether the path is absolute.
+   */
   public isAbsolute(): boolean {
     return this.relativity === -1;
   }
 
+  /**
+   * Returns whether the path is relative;
+   */
+  public isRelative(): boolean {
+    return !this.isAbsolute();
+  }
+
+  /**
+   * Returns whether this path is equal to another path, i.e., whether both consist of equal {@link Path.isComponent | components}, both have the same number of {@link Path.prototype.getParentSteps | parent steps}, and either both are relative or both are absolute.
+   */
   public equals(other: Pathish): boolean {
     const other_ = Path.fromPathish(other);
 
@@ -143,7 +195,7 @@ export class Path {
   }
 
   /**
-   * Returns whether `this` is a prefix of `other`.
+   * Returns whether `this` is a prefix of `other`, i.e., if the {@link Path.isComponent | components} of `this` are a prefix of the {@link Path.isComponent | components} of `other` **and** both have the same number of {@link Path.prototype.getParentSteps | parent steps}, and either both are relative or both are absolute.
    */
   public prefixes(other: Pathish): boolean {
     const other_ = Path.fromPathish(other);
@@ -164,12 +216,22 @@ export class Path {
     return true;
   }
 
+  /**
+   * Returns whether `this` is prefixed by `other`, i.e., if the {@link Path.isComponent | components} of `other` are a prefix of the {@link Path.isComponent | components} of `self` **and** both have the same number of {@link Path.prototype.getParentSteps | parent steps}, and either both are relative or both are absolute.
+   */
   public isPrefixedBy(other: Pathish): boolean {
     const other_ = Path.fromPathish(other);
 
     return other_.prefixes(this);
   }
 
+  /**
+   * Concatenates two paths.
+   *
+   * In essence, this concatenates the {@link Path.isComponent | components} of the two paths, except that the {@link Path.prototype.getParentSteps | parent steps} of `other` annohilate any coponents of `this` that they come in contact with.
+   *
+   * If `other` is an absolute path, this method throws a {@linkcode ConcatPathError}. If `this` is absolute and `other` has more {@link Path.prototype.getParentSteps | parent steps} than `this` has components, this method also throws a {@linkcode ConcatPathError}.
+   */
   public concat(other: Pathish): Path {
     const other_ = Path.fromPathish(other);
 
@@ -211,6 +273,11 @@ export class Path {
     }
   }
 
+  /**
+   * Converts `this` into a string, such that {@link parsePath | parsing} that string would yield back the origina path (well, an {@linkcode Path.prototype.equal | equal} one).
+   *
+   * The string format is human-readable.
+   */
   public toString(): string {
     if (this.isAbsolute()) {
       if (this.components.length === 0) {
@@ -251,18 +318,32 @@ export class Path {
       }
     }
   }
+
+  /**
+   * Renders the path to a platform-native path string.
+   */
+  toNativeString(): string {
+    const rendered = this.toString();
+    return rendered.replaceAll("/", SEPARATOR);
+  }
 }
 
 /**
- * The type of errors thrown by `Path.concat`. The `name` property is always `ConcatPathError`.
+ * The type of errors thrown by {@linkcode Path.prototype.concat | Path.concat}. The `name` property of such an error is always `"ConcatPathError"`.
  */
 export class ConcatPathError extends Error {
+  /**
+   * The path onto which the concatenation was attempted (i.e., the first path).
+   */
   base: Path;
+  /**
+   * The path which was being concatenated to the `base` (i.e., the second path).
+   */
   appending: Path;
 
   constructor(message: string, base: Path, appending: Path) {
     super(message);
-    Object.setPrototypeOf(this, MemoryFsError.prototype);
+    Object.setPrototypeOf(this, ConcatPathError.prototype);
     this.name = "ConcatPathError";
     this.base = base;
     this.appending = appending;
@@ -270,10 +351,11 @@ export class ConcatPathError extends Error {
 }
 
 /**
- * Parses a string into a `Path`. Uses `/` as a path separator.
+ * Parses a string into a {@linkcode Path}. Uses `/` as the component separator.
+ *
  * Absolute paths start with `/`, relative paths start with zero or more `..` components, or with a single `.` component. Internal `..` components are resolved as expected (they effectively annihilate the preceding "real" component; going "above" the root in an absolute path yields an error), and internal `.` components are ignored (as expected). Path components may not contain `/`, and may not be the empty string.
  *
- * Throws `ParseSimpleFsPathError`s when receiving an argument that cannot be parsed.
+ * Throws a {@linkcode ParseSimpleFsPathError} when receiving an argument that cannot be parsed.
  */
 export function parsePath(str: string): Path {
   if (str.length === 0) {
@@ -332,35 +414,42 @@ export function parsePath(str: string): Path {
 }
 
 /**
- * The type of errors thrown by `parsePath`. The `name` property is always `ParseSimpleFsPathError`.
+ * The type of errors thrown by {@linkcode parsePath}. The `name` property of such an error is always `"ParseSimpleFsPathError"`.
  */
 export class ParseSimpleFsPathError extends Error {
   stringToParse: string;
 
   constructor(message: string, stringToParse: string) {
     super(message);
-    Object.setPrototypeOf(this, MemoryFsError.prototype);
+    Object.setPrototypeOf(this, ParseSimpleFsPathError.prototype);
     this.name = "ParseSimpleFsPathError";
     this.stringToParse = stringToParse;
   }
 }
 
 /**
- * Describes how some file operations should operated when they would conflict with existing files.
- * Implementations must have all operations default to `"timid"`.
+ * Describes how a file operation should operate when it would conflict with existing files.
+ *
+ * All implementors of the {@linkcode SimpleFilesystem} and {@linkcode SimpleFilesystemExt} interfaces must have all operations default to `"timid"`.
  *
  * - `"timid"`: throw an error.
- * - `"placid"`: leave the file system unchanged.
+ * - `"placid"`: leave the file system unchanged, but do noth throw an error.
  * - `"assertive"`: overwrite whatever was there before.
  */
 export type Mode = "timid" | "placid" | "assertive";
 
 /**
- * A simple filesystem. A filesystem is a combination of a root *directory* and a *working directory*. A *directory* is a mapping from path components to directories or data files.
+ * A simple filesystem.
  *
- * All operations that take paths as arguments apply the path to the current working directory to determine where to operate. If applying the path results in an invalid path or the path cannot be followed in the file system because of data files instead of directories, the operation performs no changes and rejects (async) or throws (sync). If a path cannot be followed because directories do not exist, then the behaviour depends on the operation: operations that create files (all operations which reutnr `void` or `Promise<void>`) will simply create the necessary directories. All other operations will reject/throw.
+ * Conceptually, a filesystem is the pair of some root *directory* and a dedicated position therein, called the *current working directory*. This interface describes the operations by which such a filesystem can be manipulated.
  *
- * Async operations do not throw but reject instead.
+ * A *directory* is a mapping from {@link Path.isComponent | path components} to directories and/or data files.
+ *
+ * All operations that take paths as arguments apply the path to the current working directory to determine where to operate. If applying the path results in an invalid path or the path cannot be followed in the file system because an inner component is a data file instead of a directory, the operation performs no changes and rejects (async) or throws (sync). If a path cannot be followed because (parent) directories do not exist, then the behaviour depends on the operation: operations that create files (all operations which retunr `void` or `Promise<void>`) will simply create the necessary directories. All other operations will reject/throw.
+ *
+ * Async operations never throw, but reject instead.
+ *
+ * See {@linkcode SimpleFilesystemExt} for an interface providing more advanced file manipulation methods, and see {@linkcode FilesystemExt} for a wrapper that can convert any concrete {@linkcode SimpleFilesystem} into a {@linkcode SimpleFilesystemExt}.
  */
 export interface SimpleFilesystem {
   /**
@@ -451,7 +540,7 @@ export interface SimpleFilesystem {
 }
 
 /**
- * A `SimpleFilesystem` together with more utility functions. Any `SimpleFilesystem` can be converted into a `SimpleFilesystemExt` via the `FilesystemExt` class, but this interface can also be implemented natively for more efficient method implementations than the default implementation of `FilesystemExt`.
+ * This interface adds some utility functions to the {@linkcode SimpleFilesystem} interface. Any {@linkcode SimpleFilesystem} can be converted into a {@linkcode SimpleFilesystemExt} via the {@linkcode FilesystemExt} class, but this interface can also be implemented natively for more efficient method implementations than the default implementations of {@linkcode FilesystemExt}.
  */
 export interface SimpleFilesystemExt {
   /**
@@ -492,12 +581,15 @@ export interface SimpleFilesystemExt {
 }
 
 /**
- * Turns a `SimpleFilesystem` into a `SimpleFilesystemExt` with some default implementations.
+ * Adds to any {@linkcode SimpleFilesystem} the methods of the {@linkcode SimpleFilesystemExt} interface by providing default default implementations, implemented purely in terms of the methods of the {@linkcode SimpleFilesystem}  interface.
  */
 export class FilesystemExt<Fs extends SimpleFilesystem>
   implements SimpleFilesystem, SimpleFilesystemExt {
   fs: Fs;
 
+  /**
+   * Wraps an arbitrary {@linkcode SimpleFilesystem}, adding to it default implementations of the {@linkcode SimpleFilesystemExt} interface.
+   */
   constructor(fs: Fs) {
     this.fs = fs;
   }
@@ -712,17 +804,25 @@ const TIMID =
   "A filesystem oepration of mode `timid` (the default mode) would have overwritten data, so it threw this error instead.";
 
 /**
- * An implementation of `SimpleFilesystem` that stores data purely in memory.
+ * An implementation of {@linkcode SimpleFilesystem} that stores data purely in memory.
  */
 export class MemoryFs implements SimpleFilesystem {
+  /** @ignore */
   private root: MemoryDirectory;
+  /** @ignore */
   private workingDirectory: Path;
 
+  /**
+   * Creates a new in-memory filesystem.
+   *
+   * The root of the new filesystem is an empty directory. The initial current working directory is `/` (i.e., that one directory).
+   */
   constructor() {
     this.root = new MemoryDirectory(new Map());
     this.workingDirectory = Path.absolute([]);
   }
 
+  /** @ignore */
   private resolveAbsolutePath(
     path: Pathish,
     createParentDirs = false,
@@ -733,6 +833,7 @@ export class MemoryFs implements SimpleFilesystem {
     return this.root.resolveAbsolutePath(path, createParentDirs);
   }
 
+  /** @ignore */
   private computeAbsolutePath(path: Pathish): Path {
     const path_ = Path.fromPathish(path);
 
@@ -928,28 +1029,28 @@ export class MemoryFs implements SimpleFilesystem {
     removeSrc: boolean,
     mode: Mode,
   ): void {
-    const src_absolute = this.computeAbsolutePath(src);
-    const src_resolved = this.resolveAbsolutePath(src_absolute, false);
+    const srcAbsolute = this.computeAbsolutePath(src);
+    const srcResolved = this.resolveAbsolutePath(srcAbsolute, false);
 
-    if (src_resolved[0] === "nothing") {
+    if (srcResolved[0] === "nothing") {
       throw new MemoryFsError(NO_SUCH_FILE);
     } else {
-      const dst_absolute = this.computeAbsolutePath(dst);
-      const dst_resolved = this.resolveAbsolutePath(dst_absolute, true);
+      const dstAbsolute = this.computeAbsolutePath(dst);
+      const dstResolved = this.resolveAbsolutePath(dstAbsolute, true);
 
-      if (dst_resolved[0] === "nothing") {
-        if (dst_resolved[1] === undefined) {
+      if (dstResolved[0] === "nothing") {
+        if (dstResolved[1] === undefined) {
           throw new MemoryFsError(CANNOT_COPY_OR_MOVE_INTO_ROOT);
         } else {
-          if (src_resolved[0] instanceof MemoryDirectory) {
-            dst_resolved[1].contents.set(
-              dst_absolute.getFinalComponent()!,
-              src_resolved[0].clone(),
+          if (srcResolved[0] instanceof MemoryDirectory) {
+            dstResolved[1].contents.set(
+              dstAbsolute.getFinalComponent()!,
+              srcResolved[0].clone(),
             );
           } else {
-            dst_resolved[1].contents.set(
-              dst_absolute.getFinalComponent()!,
-              new Uint8Array(src_resolved[0]),
+            dstResolved[1].contents.set(
+              dstAbsolute.getFinalComponent()!,
+              new Uint8Array(srcResolved[0]),
             );
           }
 
@@ -958,7 +1059,7 @@ export class MemoryFs implements SimpleFilesystem {
           }
         }
       } else {
-        if (dst_resolved[1] === undefined) {
+        if (dstResolved[1] === undefined) {
           throw new MemoryFsError(CANNOT_COPY_OR_MOVE_INTO_ROOT);
         } else {
           if (mode === "timid") {
@@ -969,15 +1070,15 @@ export class MemoryFs implements SimpleFilesystem {
             }
             // Do nothing.
           } else {
-            if (src_resolved[0] instanceof MemoryDirectory) {
-              dst_resolved[1].contents.set(
-                dst_absolute.getFinalComponent()!,
-                src_resolved[0].clone(),
+            if (srcResolved[0] instanceof MemoryDirectory) {
+              dstResolved[1].contents.set(
+                dstAbsolute.getFinalComponent()!,
+                srcResolved[0].clone(),
               );
             } else {
-              dst_resolved[1].contents.set(
-                dst_absolute.getFinalComponent()!,
-                new Uint8Array(src_resolved[0]),
+              dstResolved[1].contents.set(
+                dstAbsolute.getFinalComponent()!,
+                new Uint8Array(srcResolved[0]),
               );
             }
 
@@ -991,9 +1092,9 @@ export class MemoryFs implements SimpleFilesystem {
   }
 
   /**
-   * Create a populated `MemoryFs` (with a current working directory of `/`).
+   * Create a populated `MemoryFs` (with a current working directory of `/`) from a given {@linkcode MemoryFsLiteral}.
    *
-   * Throws if any of the strings is not a valid component.
+   * Throws if any of the strings is not a valid {@link Path.isComponent | component}.
    */
   static fromLiteral(literal: MemoryFsLiteral): MemoryFs {
     const fs = new MemoryFs();
@@ -1003,7 +1104,9 @@ export class MemoryFs implements SimpleFilesystem {
 }
 
 /**
- * The argument for `MemoryFs.fromLiteral`, use this to create an immediately populated `MemoryFs`, usually for testing.
+ * The argument for {@linkcode MemoryFs.fromLiteral}, use this to create an immediately populated {@linkcode MemoryFs}, usually for testing.
+ *
+ * A `MemoryFsLiteral` is basically an object literal. The keys must be valid {@link Path.isComponent | components}, and the values either turn into file contents (if strings), or into nested directories (if nested `MemoryFsLiteral`s).
  */
 export type MemoryFsLiteral = { [key: string]: string | MemoryFsLiteral };
 
@@ -1107,7 +1210,7 @@ class MemoryDirectory {
 }
 
 /**
- * The type of errors thrown by all `MemoryFs` operations (in addition to `ConcatPathError`s and `ParseSimpleFsPathError`s). The `name` property is always `MemoryFsError`.
+ * The type of errors thrown by all {@linkcode MemoryFs} operations (except for the {@linkcode ConcatPathError | ConcatPathErrors} and {@linkcode ParseSimpleFsPathError | ParseSimpleFsPathErrors} which might also be thrown). The `name` of these errors property is always `"MemoryFsError"`.
  */
 export class MemoryFsError extends Error {
   constructor(message: string) {
